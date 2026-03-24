@@ -93,6 +93,55 @@ export default {
 
     const discordUser = interaction.member?.user || interaction.user;
     const discordId = discordUser?.id;
+
+    // --- Autocomplete Handling (Type 4) ---
+    if (interaction.type === 4) {
+      const option = interaction.data.options.find((o) => o.focused);
+      const name = option.name;
+      const value = option.value || "";
+      const projectKey = env.JIRA_PROJECT_KEY;
+
+      const fetchAutocomplete = (async () => {
+        if (name === "sprint") {
+          let boardId = await env.JIRA_CACHE.get(`BOARD_ID_${projectKey}`);
+          if (!boardId) {
+            const boards = await jira(env, `/rest/agile/1.0/board?projectKeyOrId=${projectKey}`);
+            boardId = boards.values?.[0]?.id;
+            if (boardId) await env.JIRA_CACHE.put(`BOARD_ID_${projectKey}`, boardId.toString());
+          }
+
+          if (boardId) {
+            const sprints = await jira(env, `/rest/agile/1.0/board/${boardId}/sprint?state=active,future`);
+            const choices = (sprints.values || [])
+              .filter((s) => s.name.toLowerCase().includes(value.toLowerCase()))
+              .map((s) => ({ name: `${s.state === "active" ? "🏃 " : "📅 "}${s.name}`, value: s.id.toString() }))
+              .slice(0, 25);
+            return choices;
+          }
+        }
+
+        if (name === "epic") {
+          const epics = await jira(env, `/rest/api/3/search/jql`, "POST", {
+            jql: `project = ${projectKey} AND issuetype = Epic AND statusCategory != Done ORDER BY created DESC`,
+            fields: ["summary"],
+            maxResults: 25,
+          });
+          const choices = (epics.issues || [])
+            .filter((i) => i.fields.summary.toLowerCase().includes(value.toLowerCase()) || i.key.toLowerCase().includes(value.toLowerCase()))
+            .map((i) => ({ name: `${i.key}: ${i.fields.summary}`, value: i.key }))
+            .slice(0, 25);
+          return choices;
+        }
+        return [];
+      })();
+
+      // Discord autocomplete has a 3-second limit. Race it.
+      const timeout = new Promise((resolve) => setTimeout(() => resolve([]), 2500));
+      const choices = await Promise.race([fetchAutocomplete, timeout]);
+
+      return Response.json({ type: 8, data: { choices: choices || [] } });
+    }
+
     const token = interaction.token;
     const cmd = interaction.data.name;
 
@@ -104,13 +153,19 @@ export default {
         const issuetype = opts.find((o) => o.name === "issuetype").value;
         const priority = opts.find((o) => o.name === "priority")?.value;
         const assigneeParam = opts.find((o) => o.name === "assignee")?.value;
-        const sprintIdParam = opts.find((o) => o.name === "sprint_id")?.value;
-        const epicKeyParam = opts.find((o) => o.name === "epic_key")?.value;
+        let sprintIdParam = opts.find((o) => o.name === "sprint")?.value;
+        const epicKeyParam = opts.find((o) => o.name === "epic")?.value;
+        const zohoTicketParam = opts.find((o) => o.name === "zoho_ticket")?.value;
+
+        let finalDescription = description;
+        if (zohoTicketParam) {
+          finalDescription += `\n\n**Zoho Ticket:** ${zohoTicketParam}`;
+        }
 
         const fields = {
           project: { key: env.JIRA_PROJECT_KEY },
           summary: title,
-          description: jiraDescription(description),
+          description: jiraDescription(finalDescription),
           issuetype: { name: issuetype },
           ...(priority ? { priority: { name: priority } } : {}),
         };
@@ -131,6 +186,23 @@ export default {
 
         const issue = await jira(env, "/rest/api/3/issue", "POST", { fields });
 
+        // Default to Active Sprint if none provided
+        if (!sprintIdParam) {
+          const projectKey = env.JIRA_PROJECT_KEY;
+          let boardId = await env.JIRA_CACHE.get(`BOARD_ID_${projectKey}`);
+          if (!boardId) {
+            const boards = await jira(env, `/rest/agile/1.0/board?projectKeyOrId=${projectKey}`);
+            boardId = boards.values?.[0]?.id;
+            if (boardId) await env.JIRA_CACHE.put(`BOARD_ID_${projectKey}`, boardId.toString());
+          }
+          if (boardId) {
+            const activeSprints = await jira(env, `/rest/agile/1.0/board/${boardId}/sprint?state=active`);
+            if (activeSprints.values?.[0]) {
+              sprintIdParam = activeSprints.values[0].id.toString();
+            }
+          }
+        }
+
         if (sprintIdParam && issue.id) {
           await jira(env, `/rest/agile/1.0/sprint/${sprintIdParam}/issue`, "POST", {
             issues: [issue.key],
@@ -140,7 +212,7 @@ export default {
         return Response.json(
           embed(
             "📌 Jira Task Created",
-            `**Key:** [${issue.key}](${env.JIRA_BASE_URL}/browse/${issue.key})\n**Summary:** ${title}${assigneeParam ? `\n**Assignee:** ${assigneeParam}` : ""}${sprintIdParam ? `\n**Sprint ID:** ${sprintIdParam}` : ""}${epicKeyParam ? `\n**Epic:** ${epicKeyParam}` : ""}`,
+            `**Key:** [${issue.key}](${env.JIRA_BASE_URL}/browse/${issue.key})\n**Summary:** ${title}${assigneeParam ? `\n**Assignee:** ${assigneeParam}` : ""}${sprintIdParam ? `\n**Sprint:** Added to current active sprint` : ""}${epicKeyParam ? `\n**Epic:** ${epicKeyParam}` : ""}${zohoTicketParam ? `\n**Zoho Ticket:** ${zohoTicketParam}` : ""}`,
             `${env.JIRA_BASE_URL}/browse/${issue.key}`,
           ),
         );
@@ -272,22 +344,6 @@ export default {
       }
     }
 
-    if (cmd === "done") {
-      const key = interaction.data.options[0].value;
-
-      await jira(env, `/rest/api/3/issue/${key}/transitions`, "POST", {
-        transition: { id: "31" },
-      });
-
-      return Response.json(
-        embed(
-          "✅ Task Updated",
-          `${key} marked as Done`,
-          `${env.JIRA_BASE_URL}/browse/${key}`,
-        ),
-      );
-    }
-
     if (cmd === "linkjira") {
       const email = interaction.data.options[0].value;
 
@@ -321,10 +377,9 @@ export default {
         embed(
           "🤖 Jira Bot",
           `
-            /create – create Jira task with dropdown options
-            /sprint – show current sprint board
-            /mytasks – show tasks assigned to you
-            /done – mark task done
+            /create – 📌 create Jira task with dropdown options
+            /sprint – 🏃 show current sprint board
+            /mytasks – 📋 show tasks assigned to you
           `,
         ),
       );
