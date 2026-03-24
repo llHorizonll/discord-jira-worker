@@ -1,0 +1,17 @@
+{
+  "name": "discord-jira-worker",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "register": "bun register-command.js",
+    "log": "wrangler tail"
+  },
+  "dependencies": {
+    "discord-interactions": "^3.4.0",
+    "dotenv": "^17.3.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.71.0"
+  }
+}

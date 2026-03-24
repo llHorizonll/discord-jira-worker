@@ -1,0 +1,15 @@
+name = "discord-jira-bot"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+JIRA_BASE_URL="https://carmen-ac.atlassian.net"
+JIRA_PROJECT_KEY="C4"
+
+[[kv_namespaces]]
+binding = "JIRA_CACHE"
+id = "02e7643073b54ddebf983392322db2e0"
+
+[[kv_namespaces]]
+binding = "USER_MAP"
+id = "5200409f8d014ab38947870db40ee721"
