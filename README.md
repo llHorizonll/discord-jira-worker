@@ -64,6 +64,46 @@ The bot provides the following slash commands:
 - `/linkjira`: Link your Discord account to your Jira email for personalized commands
 - `/help`: Show bot help and command descriptions
 
+## Auto Create Jira From Discord Thread (Webhook Mode)
+
+This worker now supports a webhook endpoint for auto-creating Jira issues when a Discord thread is created.
+
+- Endpoint: `POST /webhook/discord-thread`
+- Header: `x-thread-webhook-secret: <THREAD_WEBHOOK_SECRET>`
+- Required env secret: `THREAD_WEBHOOK_SECRET`
+- Required payload fields: `threadId`, `threadName`
+
+Example payload:
+
+```json
+{
+  "threadId": "123456789012345678",
+  "threadName": "Bug report: login error",
+  "guildId": "111111111111111111",
+  "guildName": "My Server",
+  "channelId": "222222222222222222",
+  "channelName": "support",
+  "ownerId": "333333333333333333",
+  "threadUrl": "https://discord.com/channels/111/222/123",
+  "issuetype": "Task",
+  "priority": "High",
+  "assignee": "jira-user@email.com",
+  "epicKey": "C4-10",
+  "zohoTicket": "ZH-1001",
+  "imageUrl": "https://cdn.discordapp.com/...",
+  "addToActiveSprintWhenEmpty": true
+}
+```
+
+Notes:
+- The endpoint deduplicates by `threadId` (cache key `THREAD_TO_ISSUE_<threadId>`).
+- If `title` is not sent, worker uses `[Thread] <threadName>`.
+- If `description` is not sent, worker auto-builds description from thread metadata.
+
+Starter listener script:
+- File: `examples/thread-listener.js`
+- Requires a separate Node process with `discord.js` that listens to `ThreadCreate` and posts to the worker webhook.
+
 ## Configuration
 
 ### Wrangler Configuration

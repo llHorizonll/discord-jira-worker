@@ -1,14 +1,19 @@
 import { verifyKey } from "discord-interactions";
 
 function jiraDescription(text) {
+  const paragraphs = text.split("\n").filter(p => p.trim() !== "").map(p => ({
+    type: "paragraph",
+    content: [{ type: "text", text: p.trim() }],
+  }));
+
   return {
     type: "doc",
     version: 1,
-    content: [
+    content: paragraphs.length > 0 ? paragraphs : [
       {
         type: "paragraph",
-        content: [{ type: "text", text }],
-      },
+        content: [{ type: "text", text: "" }],
+      }
     ],
   };
 }
@@ -56,23 +61,206 @@ async function jira(env, path, method = "GET", body = null) {
   return res.text();
 }
 
-async function cacheSet(env, key, data) {
-  await env.JIRA_CACHE.put(key, JSON.stringify(data), { expirationTtl: 3600 });
+async function getBoardId(env, projectKey) {
+  let boardId = await env.JIRA_CACHE.get(`BOARD_ID_${projectKey}`);
+  if (!boardId) {
+    const boards = await jira(env, `/rest/agile/1.0/board?projectKeyOrId=${projectKey}`);
+    boardId = boards.values?.[0]?.id;
+    if (boardId) {
+      await env.JIRA_CACHE.put(`BOARD_ID_${projectKey}`, boardId.toString());
+    }
+  }
+  return boardId;
 }
 
-async function updateInteraction(env, token, data) {
-  const url = `https://discord.com/api/v10/webhooks/${env.APP_ID}/${token}/messages/@original`;
-  await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
+async function getActiveSprintId(env, projectKey) {
+  const boardId = await getBoardId(env, projectKey);
+  if (!boardId) return null;
+
+  const activeSprints = await jira(env, `/rest/agile/1.0/board/${boardId}/sprint?state=active`);
+  return activeSprints.values?.[0]?.id?.toString() || null;
+}
+
+async function createJiraIssue(env, input) {
+  const {
+    title,
+    description,
+    issuetype,
+    priority,
+    assigneeParam,
+    sprintIdParam,
+    epicKeyParam,
+    zohoTicketParam,
+    imageUrl,
+    addToActiveSprintWhenEmpty = true,
+  } = input;
+
+  let finalDescription = description;
+  if (zohoTicketParam) {
+    finalDescription += `\n\nZoho Ticket: ${zohoTicketParam}`;
+  }
+  if (imageUrl) {
+    finalDescription += `\n\nAttached Image: ${imageUrl}`;
+  }
+
+  const fields = {
+    project: { key: env.JIRA_PROJECT_KEY },
+    summary: title,
+    description: jiraDescription(finalDescription),
+    issuetype: { name: issuetype },
+    ...(priority ? { priority: { name: priority } } : {}),
+  };
+
+  if (assigneeParam) {
+    const users = await jira(
+      env,
+      `/rest/api/3/user/search?query=${encodeURIComponent(assigneeParam)}`,
+    );
+    if (users && users.length > 0) {
+      fields.assignee = { accountId: users[0].accountId };
+    }
+  }
+
+  if (epicKeyParam) {
+    fields.parent = { key: epicKeyParam };
+  }
+
+  const issue = await jira(env, "/rest/api/3/issue", "POST", { fields });
+  let finalSprintId = sprintIdParam;
+
+  if (!finalSprintId && addToActiveSprintWhenEmpty) {
+    finalSprintId = await getActiveSprintId(env, env.JIRA_PROJECT_KEY);
+  }
+
+  if (finalSprintId && issue.id) {
+    await jira(env, `/rest/agile/1.0/sprint/${finalSprintId}/issue`, "POST", {
+      issues: [issue.key],
+    });
+  }
+
+  return {
+    issue,
+    finalSprintId,
+  };
 }
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
     if (request.method !== "POST") {
       return new Response("ok");
+    }
+
+    if (url.pathname === "/webhook/discord-thread") {
+      if (!env.THREAD_WEBHOOK_SECRET) {
+        return Response.json(
+          { ok: false, error: "THREAD_WEBHOOK_SECRET is not configured" },
+          { status: 500 },
+        );
+      }
+
+      const webhookSecret = request.headers.get("x-thread-webhook-secret");
+      if (!webhookSecret || webhookSecret !== env.THREAD_WEBHOOK_SECRET) {
+        return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+      }
+
+      let payload;
+      try {
+        payload = await request.json();
+      } catch {
+        return Response.json({ ok: false, error: "invalid json payload" }, { status: 400 });
+      }
+
+      const threadId = payload.threadId?.toString();
+      const threadName = payload.threadName?.trim();
+      if (!threadId || !threadName) {
+        return Response.json(
+          { ok: false, error: "threadId and threadName are required" },
+          { status: 400 },
+        );
+      }
+
+      const dedupeKey = `THREAD_TO_ISSUE_${threadId}`;
+      const existingIssueKey = await env.JIRA_CACHE.get(dedupeKey);
+      if (existingIssueKey) {
+        return Response.json({
+          ok: true,
+          deduplicated: true,
+          issueKey: existingIssueKey,
+          issueUrl: `${env.JIRA_BASE_URL}/browse/${existingIssueKey}`,
+        });
+      }
+
+      try {
+        const isValidDiscordThreadUrl = (value) => {
+          if (!value || typeof value !== "string") return false;
+          try {
+            const parsed = new URL(value);
+            if (parsed.hostname !== "discord.com" && parsed.hostname !== "www.discord.com") {
+              return false;
+            }
+            const parts = parsed.pathname.split("/").filter(Boolean);
+            return parts[0] === "channels" && parts.length >= 3;
+          } catch {
+            return false;
+          }
+        };
+
+        const fallbackThreadUrl = payload.guildId
+          ? `https://discord.com/channels/${payload.guildId}/${threadId}`
+          : null;
+
+        const threadUrl = isValidDiscordThreadUrl(payload.threadUrl)
+          ? payload.threadUrl
+          : fallbackThreadUrl;
+
+        const details = [
+          `Thread Name: ${threadName}`,
+          `Thread ID: ${threadId}`,
+          payload.guildName ? `Guild: ${payload.guildName}` : null,
+          payload.channelName ? `Channel: ${payload.channelName}` : null,
+          payload.channelId ? `Parent Channel ID: ${payload.channelId}` : null,
+          threadUrl ? `Thread URL: ${threadUrl}` : null,
+          payload.ownerId ? `Owner: <@${payload.ownerId}>` : null,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        const customTitle = payload.title?.trim();
+        const title = customTitle
+          ? `${customTitle} | ${threadName}`
+          : `[Thread] ${threadName}`;
+
+        const customDescription = payload.description?.trim();
+        const description = customDescription
+          ? `${customDescription}\n\n${details}`
+          : `Auto-created from Discord thread.\n\n${details}`;
+
+        const result = await createJiraIssue(env, {
+          title,
+          description,
+          issuetype: payload.issuetype || "Task",
+          priority: payload.priority,
+          assigneeParam: payload.assignee,
+          sprintIdParam: payload.sprintId?.toString(),
+          epicKeyParam: payload.epicKey,
+          zohoTicketParam: payload.zohoTicket,
+          imageUrl: payload.imageUrl,
+          addToActiveSprintWhenEmpty: payload.addToActiveSprintWhenEmpty !== false,
+        });
+
+        await env.JIRA_CACHE.put(dedupeKey, result.issue.key, { expirationTtl: 2592000 });
+
+        return Response.json({
+          ok: true,
+          issueKey: result.issue.key,
+          issueUrl: `${env.JIRA_BASE_URL}/browse/${result.issue.key}`,
+          sprintId: result.finalSprintId,
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
+      }
     }
 
     const signature = request.headers.get("x-signature-ed25519");
@@ -142,7 +330,6 @@ export default {
       return Response.json({ type: 8, data: { choices: choices || [] } });
     }
 
-    const token = interaction.token;
     const cmd = interaction.data.name;
 
     if (cmd === "create") {
@@ -156,64 +343,32 @@ export default {
         let sprintIdParam = opts.find((o) => o.name === "sprint")?.value;
         const epicKeyParam = opts.find((o) => o.name === "epic")?.value;
         const zohoTicketParam = opts.find((o) => o.name === "zoho_ticket")?.value;
+        const imageId = opts.find((o) => o.name === "image")?.value;
 
-        let finalDescription = description;
-        if (zohoTicketParam) {
-          finalDescription += `\n\n**Zoho Ticket:** ${zohoTicketParam}`;
+        let imageUrl = null;
+        if (imageId && interaction.data.resolved?.attachments?.[imageId]) {
+          imageUrl = interaction.data.resolved.attachments[imageId].url;
         }
 
-        const fields = {
-          project: { key: env.JIRA_PROJECT_KEY },
-          summary: title,
-          description: jiraDescription(finalDescription),
-          issuetype: { name: issuetype },
-          ...(priority ? { priority: { name: priority } } : {}),
-        };
-
-        if (assigneeParam) {
-          const users = await jira(
-            env,
-            `/rest/api/3/user/search?query=${encodeURIComponent(assigneeParam)}`,
-          );
-          if (users && users.length > 0) {
-            fields.assignee = { accountId: users[0].accountId };
-          }
-        }
-
-        if (epicKeyParam) {
-          fields.parent = { key: epicKeyParam };
-        }
-
-        const issue = await jira(env, "/rest/api/3/issue", "POST", { fields });
-
-        // Default to Active Sprint if none provided
-        if (!sprintIdParam) {
-          const projectKey = env.JIRA_PROJECT_KEY;
-          let boardId = await env.JIRA_CACHE.get(`BOARD_ID_${projectKey}`);
-          if (!boardId) {
-            const boards = await jira(env, `/rest/agile/1.0/board?projectKeyOrId=${projectKey}`);
-            boardId = boards.values?.[0]?.id;
-            if (boardId) await env.JIRA_CACHE.put(`BOARD_ID_${projectKey}`, boardId.toString());
-          }
-          if (boardId) {
-            const activeSprints = await jira(env, `/rest/agile/1.0/board/${boardId}/sprint?state=active`);
-            if (activeSprints.values?.[0]) {
-              sprintIdParam = activeSprints.values[0].id.toString();
-            }
-          }
-        }
-
-        if (sprintIdParam && issue.id) {
-          await jira(env, `/rest/agile/1.0/sprint/${sprintIdParam}/issue`, "POST", {
-            issues: [issue.key],
-          });
-        }
+        const result = await createJiraIssue(env, {
+          title,
+          description,
+          issuetype,
+          priority,
+          assigneeParam,
+          sprintIdParam,
+          epicKeyParam,
+          zohoTicketParam,
+          imageUrl,
+          addToActiveSprintWhenEmpty: true,
+        });
+        sprintIdParam = result.finalSprintId;
 
         return Response.json(
           embed(
             "📌 Jira Task Created",
-            `**Key:** [${issue.key}](${env.JIRA_BASE_URL}/browse/${issue.key})\n**Summary:** ${title}${assigneeParam ? `\n**Assignee:** ${assigneeParam}` : ""}${sprintIdParam ? `\n**Sprint:** Added to current active sprint` : ""}${epicKeyParam ? `\n**Epic:** ${epicKeyParam}` : ""}${zohoTicketParam ? `\n**Zoho Ticket:** ${zohoTicketParam}` : ""}`,
-            `${env.JIRA_BASE_URL}/browse/${issue.key}`,
+            `**Key:** [${result.issue.key}](${env.JIRA_BASE_URL}/browse/${result.issue.key})\n**Summary:** ${title}${assigneeParam ? `\n**Assignee:** ${assigneeParam}` : ""}${sprintIdParam ? `\n**Sprint:** Added to current active sprint` : ""}${epicKeyParam ? `\n**Epic:** ${epicKeyParam}` : ""}${zohoTicketParam ? `\n**Zoho Ticket:** ${zohoTicketParam}` : ""}${imageUrl ? `\n**Image:** [View Attachment](${imageUrl})` : ""}`,
+            `${env.JIRA_BASE_URL}/browse/${result.issue.key}`,
           ),
         );
       } catch (err) {
@@ -377,9 +532,10 @@ export default {
         embed(
           "🤖 Jira Bot",
           `
-            /create – 📌 create Jira task with dropdown options
-            /sprint – 🏃 show current sprint board
-            /mytasks – 📋 show tasks assigned to you
+            /create – 📌 Create Jira task (supports image attachments)
+            /sprint – 🏃 Show current sprint board
+            /mytasks – 📋 Show tasks assigned to you
+            /linkjira – 🔗 Link your Discord account to Jira email
           `,
         ),
       );

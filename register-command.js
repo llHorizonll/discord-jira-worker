@@ -36,6 +36,12 @@ const commands = [
         required: false,
       },
       {
+        name: "image",
+        description: "🖼️ Attach an image to the task",
+        type: 11,
+        required: false,
+      },
+      {
         name: "priority",
         description: "Priority level",
         type: 3,
