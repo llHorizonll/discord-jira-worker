@@ -78,6 +78,20 @@ const commands = [
   {
     name: "sprint",
     description: "🏃 Show current sprint issues",
+    options: [
+      {
+        name: "status",
+        description: "Filter by status (e.g. 'To Do', 'In Progress')",
+        type: 3,
+        required: false,
+        choices: [
+          { name: "In Progress", value: "In Progress" },
+          { name: "HotFix", value: "HotFix" },
+          { name: "Requirement", value: "Requirement" },
+          { name: "TESTING", value: "TESTING" },
+        ],
+      },
+    ],
   },
   {
     name: "mytasks",

@@ -378,6 +378,9 @@ export default {
 
     if (cmd === "sprint") {
       try {
+        const opts = interaction.data.options || [];
+        const statusParam = opts.find((o) => o.name === "status")?.value;
+
         const projectKey = env.JIRA_PROJECT_KEY;
         let boardId = await env.JIRA_CACHE.get(`BOARD_ID_${projectKey}`);
 
@@ -436,9 +439,27 @@ export default {
           }
         }
 
+        let jql = "";
+        if (statusParam) {
+          const statuses = statusParam.split(",").map((s) => s.trim());
+          if (statuses.length > 1) {
+            jql = `status IN (${statuses.map((s) => `"${s}"`).join(",")})`;
+          } else {
+            jql = `status = "${statuses[0]}"`;
+          }
+        }
+
+        const urlParams = new URLSearchParams({
+          maxResults: "15",
+          fields: "summary,status",
+        });
+        if (jql) {
+          urlParams.append("jql", jql);
+        }
+
         const issuesData = await jira(
           env,
-          `/rest/agile/1.0/sprint/${sprintId}/issue?maxResults=15&fields=summary,status`,
+          `/rest/agile/1.0/sprint/${sprintId}/issue?${urlParams.toString()}`,
         );
         const issues = issuesData.issues
           ?.map((i) => {
@@ -447,8 +468,12 @@ export default {
           })
           .join("\n");
 
+        const title = statusParam
+          ? `🏃 ${sprintData.name} (${statusParam})`
+          : `🏃 ${sprintData.name}`;
+
         return Response.json(
-          embed(`🏃 ${sprintData.name}`, issues || "No issues in sprint"),
+          embed(title, issues || "No issues found matching the criteria"),
         );
       } catch (err) {
         return Response.json(embed("❌ Error", err.message));
