@@ -81,6 +81,27 @@ async function getActiveSprintId(env, projectKey) {
   return activeSprints.values?.[0]?.id?.toString() || null;
 }
 
+async function getStoryPointFieldId(env) {
+  let fieldId = await env.JIRA_CACHE.get("STORY_POINT_FIELD_ID");
+  if (!fieldId) {
+    const fields = await jira(env, "/rest/api/3/field");
+    if (Array.isArray(fields)) {
+      const field = fields.find(
+        (f) =>
+          f.name === "Story Points" ||
+          f.name === "Story point estimate" ||
+          f.name?.toLowerCase() === "story points" ||
+          f.name?.toLowerCase() === "story point estimate"
+      );
+      if (field) {
+        fieldId = field.id;
+        await env.JIRA_CACHE.put("STORY_POINT_FIELD_ID", fieldId, { expirationTtl: 86400 });
+      }
+    }
+  }
+  return fieldId;
+}
+
 async function createJiraIssue(env, input) {
   const {
     title,
@@ -93,6 +114,7 @@ async function createJiraIssue(env, input) {
     zohoTicketParam,
     imageUrl,
     addToActiveSprintWhenEmpty = true,
+    storypoint,
   } = input;
 
   let finalDescription = description;
@@ -110,6 +132,15 @@ async function createJiraIssue(env, input) {
     issuetype: { name: issuetype },
     ...(priority ? { priority: { name: priority } } : {}),
   };
+
+  if (storypoint) {
+    const storyPointFieldId = await getStoryPointFieldId(env);
+    if (storyPointFieldId) {
+      fields[storyPointFieldId] = Number(storypoint);
+    } else {
+      console.warn("Story Point field ID not found in Jira");
+    }
+  }
 
   if (assigneeParam) {
     const users = await jira(
@@ -336,8 +367,9 @@ export default {
       try {
         const opts = interaction.data.options;
         const title = opts.find((o) => o.name === "title").value;
-        const description = opts.find((o) => o.name === "description").value;
-        const issuetype = opts.find((o) => o.name === "issuetype").value;
+        const description = opts.find((o) => o.name === "description")?.value || "";
+        const storypoint = opts.find((o) => o.name === "storypoint")?.value;
+        const issuetype = opts.find((o) => o.name === "issuetype")?.value || "Task";
         const priority = opts.find((o) => o.name === "priority")?.value;
         const assigneeParam = opts.find((o) => o.name === "assignee")?.value;
         let sprintIdParam = opts.find((o) => o.name === "sprint")?.value;
@@ -361,13 +393,14 @@ export default {
           zohoTicketParam,
           imageUrl,
           addToActiveSprintWhenEmpty: true,
+          storypoint,
         });
         sprintIdParam = result.finalSprintId;
 
         return Response.json(
           embed(
             "📌 Jira Task Created",
-            `**Key:** [${result.issue.key}](${env.JIRA_BASE_URL}/browse/${result.issue.key})\n**Summary:** ${title}${assigneeParam ? `\n**Assignee:** ${assigneeParam}` : ""}${sprintIdParam ? `\n**Sprint:** Added to current active sprint` : ""}${epicKeyParam ? `\n**Epic:** ${epicKeyParam}` : ""}${zohoTicketParam ? `\n**Zoho Ticket:** ${zohoTicketParam}` : ""}${imageUrl ? `\n**Image:** [View Attachment](${imageUrl})` : ""}`,
+            `**Key:** [${result.issue.key}](${env.JIRA_BASE_URL}/browse/${result.issue.key})\n**Summary:** ${title}${storypoint ? `\n**Story Point:** ${storypoint}` : ""}${assigneeParam ? `\n**Assignee:** ${assigneeParam}` : ""}${sprintIdParam ? `\n**Sprint:** Added to current active sprint` : ""}${epicKeyParam ? `\n**Epic:** ${epicKeyParam}` : ""}${zohoTicketParam ? `\n**Zoho Ticket:** ${zohoTicketParam}` : ""}${imageUrl ? `\n**Image:** [View Attachment](${imageUrl})` : ""}`,
             `${env.JIRA_BASE_URL}/browse/${result.issue.key}`,
           ),
         );

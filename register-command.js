@@ -16,30 +16,26 @@ const commands = [
         name: "description",
         description: "Task description",
         type: 3,
-        required: true,
+        required: false,
+      },
+      {
+        name: "storypoint",
+        description: "Story Point (1-10)",
+        type: 4,
+        required: false,
+        min_value: 1,
+        max_value: 10,
       },
       {
         name: "issuetype",
         description: "Issue type",
         type: 3,
-        required: true,
+        required: false,
         choices: [
           { name: "Task", value: "Task" },
           { name: "Bug", value: "Bug" },
           { name: "Story", value: "Story" },
         ],
-      },
-      {
-        name: "zoho_ticket",
-        description: "🎫 Reference ticket number from Zoho",
-        type: 3,
-        required: false,
-      },
-      {
-        name: "image",
-        description: "🖼️ Attach an image to the task",
-        type: 11,
-        required: false,
       },
       {
         name: "priority",
@@ -54,18 +50,32 @@ const commands = [
         ],
       },
       {
-        name: "assignee",
-        description: "👤 Jira email or Account ID",
-        type: 3,
-        required: false,
-      },
-      {
         name: "sprint",
         description: "🏃 Select a sprint (empty for active)",
         type: 3,
         required: false,
         autocomplete: true,
       },
+      {
+        name: "zoho_ticket",
+        description: "🎫 Reference ticket number from Zoho",
+        type: 3,
+        required: false,
+      },
+
+      {
+        name: "image",
+        description: "🖼️ Attach an image to the task",
+        type: 11,
+        required: false,
+      },
+      {
+        name: "assignee",
+        description: "👤 Jira email or Account ID",
+        type: 3,
+        required: false,
+      },
+
       {
         name: "epic",
         description: "💎 Select an Epic",
