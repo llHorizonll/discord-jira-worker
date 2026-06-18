@@ -120,6 +120,32 @@ const commands = [
     ],
   },
   {
+    name: "update",
+    description: "🔄 Update the status of a Jira task follow by workflow",
+    options: [
+      {
+        name: "issue_key",
+        description: "🔑 Issue key (e.g. C4-96)",
+        type: 3,
+        required: true,
+      },
+      {
+        name: "status",
+        description: "🔄 New status or transition name",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "To Do", value: "To Do" },
+          { name: "In Progress", value: "In Progress" },
+          { name: "TESTING", value: "TESTING" },
+          { name: "HotFix", value: "HotFix" },
+          { name: "Requirement", value: "Requirement" },
+          { name: "Done", value: "Done" },
+        ],
+      },
+    ],
+  },
+  {
     name: "help",
     description: "🤖 Show bot help",
   },

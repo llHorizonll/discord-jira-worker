@@ -351,6 +351,7 @@ export default {
             .slice(0, 25);
           return choices;
         }
+
         return [];
       })();
 
@@ -585,12 +586,72 @@ export default {
       });
     }
 
+    if (cmd === "update") {
+      try {
+        const opts = interaction.data.options;
+        const issueKey = opts.find((o) => o.name === "issue_key").value?.trim();
+        const statusVal = opts.find((o) => o.name === "status").value?.trim();
+
+        if (!issueKey || !statusVal) {
+          return Response.json(embed("❌ Error", "Both issue key and status are required."));
+        }
+
+        // 1. Fetch available transitions for this issue from Jira
+        const transitionsData = await jira(env, `/rest/api/3/issue/${issueKey}/transitions`);
+        const transitions = transitionsData.transitions || [];
+
+        if (transitions.length === 0) {
+          return Response.json(embed("❌ Error", `No available transitions found for issue **${issueKey}**.`));
+        }
+
+        // 2. Find matching transition
+        // First try to match by transition ID directly (if selected from autocomplete)
+        let selectedTransition = transitions.find(t => t.id === statusVal);
+
+        if (!selectedTransition) {
+          // Robust matching logic for string input
+          const normalize = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const normalizedInput = normalize(statusVal);
+          
+          // Try matching transition ID or name/to.name
+          selectedTransition = transitions.find(t => normalize(t.name) === normalizedInput);
+          if (!selectedTransition) {
+            selectedTransition = transitions.find(t => t.to && normalize(t.to.name) === normalizedInput);
+          }
+          if (!selectedTransition) {
+            selectedTransition = transitions.find(t => normalize(t.name).includes(normalizedInput) || normalizedInput.includes(normalize(t.name)));
+          }
+          if (!selectedTransition) {
+            selectedTransition = transitions.find(t => t.to && (normalize(t.to.name).includes(normalizedInput) || normalizedInput.includes(normalize(t.to.name))));
+          }
+        }
+
+        if (!selectedTransition) {
+          const availableList = transitions.map(t => `• **${t.to?.name || t.name}** (trigger: \`${t.name}\`)`).join("\n");
+          return Response.json(embed("❌ Status Transition Not Found", `Could not find a status transition matching **${statusVal}** for issue **${issueKey}**.\n\nAvailable transitions:\n${availableList}`));
+        }
+
+        // 3. Perform the transition
+        await jira(env, `/rest/api/3/issue/${issueKey}/transitions`, "POST", {
+          transition: {
+            id: selectedTransition.id,
+          },
+        });
+
+        const successMsg = `Successfully transitioned issue **[${issueKey}](${env.JIRA_BASE_URL}/browse/${issueKey})** to status **${selectedTransition.to?.name || selectedTransition.name}**.`;
+        return Response.json(embed("🔄 Jira Task Updated", successMsg, `${env.JIRA_BASE_URL}/browse/${issueKey}`));
+      } catch (err) {
+        return Response.json(embed("❌ Error", err.message));
+      }
+    }
+
     if (cmd === "help") {
       return Response.json(
         embed(
           "🤖 Jira Bot",
           `
             /create – 📌 Create Jira task (supports image attachments)
+            /update – 🔄 Update status of a Jira task (follows Jira workflow)
             /sprint – 🏃 Show current sprint board
             /mytasks – 📋 Show tasks assigned to you
             /linkjira – 🔗 Link your Discord account to Jira email
