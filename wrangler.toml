@@ -13,3 +13,17 @@ id = "02e7643073b54ddebf983392322db2e0"
 [[kv_namespaces]]
 binding = "USER_MAP"
 id = "5200409f8d014ab38947870db40ee721"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "discord-jira-db"
+database_id = "990070cf-f19a-4038-b606-f472230040c8"
+
+[triggers]
+crons = [
+  "*/15 * * * *",
+  "0 0 * * *",
+  "0 8 * * *",
+  "0 17 * * 5",
+  "0 8 1 * *"
+]
