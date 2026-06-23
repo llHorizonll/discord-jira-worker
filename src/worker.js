@@ -41,6 +41,120 @@ function embed(title, description, url = null) {
   };
 }
 
+function valueOrDash(value) {
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
+function maskSecret(value) {
+  const text = valueOrDash(value);
+  if (text === "-") return "-";
+  if (text.length <= 8) return "••••••••";
+  return `${text.slice(0, 4)}••••••••${text.slice(-4)}`;
+}
+
+function buildZohoDiscordPayload(data) {
+  const title = "📄 Zoho CRM License Notification";
+
+  // Identify a friendly name or account for the description
+  const description = data.version
+    ? `**${data.version}** triggered a license update.`
+    : "A new Zoho workflow event was received.";
+
+  const fields = [];
+
+  // Helper to format values (true -> ✅, false -> ❌)
+  const formatValue = (value, mask = false) => {
+    const text = String(value ?? "").trim();
+    if (text === "" || text === "-") return "-";
+    if (text.toLowerCase() === "true" || value === true) return "✅";
+    if (text.toLowerCase() === "false" || value === false) return "❌";
+    return mask ? maskSecret(text) : text;
+  };
+
+  // Helper to add field if value exists
+  const addFieldIfPresent = (name, value, inline = false, mask = false) => {
+    const formatted = formatValue(value, mask);
+    if (formatted && formatted !== "-" && !String(value).startsWith("${")) {
+      fields.push({
+        name,
+        value: formatted,
+        inline
+      });
+    }
+  };
+
+  // 1. Primary fields in the exact requested order
+  const primaryKeys = [
+    { key: "hotelUrl", name: "🔗 Hotel URL", inline: false },
+    { key: "businessUnit", name: "🏢 Business Unit", inline: true },
+    { key: "users", name: "🔢 Users", inline: true },
+    { key: "productId", name: "📦 Product ID", inline: true },
+    { key: "status", name: "🟢 Status", inline: true },
+    { key: "requestDate", name: "📅 Request Date", inline: true },
+    { key: "expiryDate", name: "📅 Expiry Date", inline: true }
+  ];
+
+  // Keep track of mapped keys to avoid duplicating them in the dynamic section
+  const mappedKeys = ["zohoRecordUrl", "authorization", "adminToken", "emails", "account", "licenseId"];
+
+  // Add primary fields first
+  for (const item of primaryKeys) {
+    addFieldIfPresent(item.name, data[item.key] || data[item.key === "productId" ? "product" : ""], item.inline);
+    mappedKeys.push(item.key);
+    if (item.key === "productId") {
+      mappedKeys.push("product");
+    }
+  }
+
+  // Ensure these are marked as mapped to prevent duplicate rendering
+  mappedKeys.push("authorization");
+  mappedKeys.push("adminToken");
+
+  // 2. Dynamic remaining fields (e.g. Use GL, Use AP, Use PMS, etc.)
+  for (const [key, val] of Object.entries(data)) {
+    if (!mappedKeys.includes(key)) {
+      // Format camelCase or snake_case key to Title Case
+      let friendlyName = key;
+      if (!key.includes(" ")) {
+        friendlyName = key
+          .replace(/([A-Z])/g, " $1")
+          .replace(/_/g, " ")
+          .replace(/^./, (str) => str.toUpperCase())
+          .trim();
+      }
+      
+      const shouldMask = /token|secret|auth|password/i.test(key);
+      addFieldIfPresent(friendlyName, val, true, shouldMask); // make them inline for a clean grid layout
+    }
+  }
+
+  // 3. Sensitive fields at the bottom
+  addFieldIfPresent("🔐 Authorization", data.authorization, false, true);
+  addFieldIfPresent("🔐 Admin Token", data.adminToken, false, true);
+
+  return {
+    username: "Zoho Webhook License",
+    embeds: [
+      {
+        title,
+        description,
+        color: 5763719,
+        fields,
+        footer: {
+          text: "Zoho CRM • Workflow Middleware"
+        },
+        timestamp: new Date().toISOString()
+      }
+    ]
+  };
+}
+
+function validateZohoPayload(data) {
+  // Relaxed validation to allow flexible payloads from Zoho CRM Webhook
+  return null;
+}
+
 async function getZohoAccessToken(env) {
   // 1. Try to get cached access token from KV
   let accessToken = await env.JIRA_CACHE.get("ZOHO_ACCESS_TOKEN");
@@ -918,12 +1032,85 @@ async function updateInteractionResponse(env, interactionToken, messagePayload) 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const pathname = url.pathname.replace(/\/$/, "");
+
+    if (pathname === "/webhook/zoho-license") {
+      if (request.method !== "POST") {
+        return Response.json(
+          { ok: false, error: "Method not allowed" },
+          { status: 405 }
+        );
+      }
+
+      if (env.ZOHO_WEBHOOK_SECRET) {
+        const token =
+          request.headers.get("X-Zoho-Webhook-Secret") ||
+          url.searchParams.get("token");
+
+        if (token !== env.ZOHO_WEBHOOK_SECRET) {
+          return Response.json(
+            { ok: false, error: "Unauthorized" },
+            { status: 401 }
+          );
+        }
+      }
+
+      let data;
+      try {
+        data = await request.json();
+      } catch (e) {
+        return Response.json(
+          { ok: false, error: "Invalid JSON body" },
+          { status: 400 }
+        );
+      }
+
+      console.log("Zoho Webhook Payload Received:", JSON.stringify(data, null, 2));
+
+      const validationError = validateZohoPayload(data);
+      if (validationError) {
+        return Response.json(
+          { ok: false, error: validationError },
+          { status: 400 }
+        );
+      }
+
+      const discordPayload = buildZohoDiscordPayload(data);
+      const webhookUrl = env.DISCORD_WEBHOOK_LICENSE || "https://discord.com/api/webhooks/1518908529807986730/1KsQLW13Yxe483JvNfwE70jrt8A0caUcrKK6ruGRwkDU9jw6gxliW4N-yqb_7a9-nKFC";
+
+      const discordResponse = await fetch(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(discordPayload)
+      });
+
+      if (!discordResponse.ok) {
+        const errorText = await discordResponse.text();
+        return Response.json(
+          {
+            ok: false,
+            error: "Discord webhook failed",
+            detail: errorText
+          },
+          { status: discordResponse.status }
+        );
+      }
+
+      // Return the exact status code from the Discord response
+      // (Discord Webhook returns a 204 No Content response upon successful delivery)
+      return new Response(null, {
+        status: discordResponse.status,
+        statusText: discordResponse.statusText
+      });
+    }
 
     if (request.method !== "POST") {
       return new Response("ok");
     }
 
-    if (url.pathname === "/webhook/discord-thread") {
+    if (pathname === "/webhook/discord-thread") {
       if (!env.THREAD_WEBHOOK_SECRET) {
         return Response.json(
           { ok: false, error: "THREAD_WEBHOOK_SECRET is not configured" },
