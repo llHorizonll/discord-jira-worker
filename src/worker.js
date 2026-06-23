@@ -54,14 +54,7 @@ function maskSecret(value) {
 }
 
 function buildZohoDiscordPayload(data) {
-  const title = "📄 Zoho CRM License Notification";
-
-  // Identify a friendly name or account for the description
-  const description = data.version
-    ? `**${data.version}** triggered a license update.`
-    : "A new Zoho workflow event was received.";
-
-  const fields = [];
+  const title = "📄 Zoho CRM Webhook Notification";
 
   // Helper to format values (true -> ✅, false -> ❌)
   const formatValue = (value, mask = false) => {
@@ -72,27 +65,25 @@ function buildZohoDiscordPayload(data) {
     return mask ? maskSecret(text) : text;
   };
 
-  // Helper to add field if value exists
-  const addFieldIfPresent = (name, value, inline = false, mask = false) => {
+  const lines = [];
+
+  // Helper to add line if value exists
+  const addLineIfPresent = (label, value, mask = false) => {
     const formatted = formatValue(value, mask);
     if (formatted && formatted !== "-" && !String(value).startsWith("${")) {
-      fields.push({
-        name,
-        value: formatted,
-        inline
-      });
+      lines.push(`${label}: ${formatted}`);
     }
   };
 
   // 1. Primary fields in the exact requested order
   const primaryKeys = [
-    { key: "hotelUrl", name: "🔗 Hotel URL", inline: false },
-    { key: "businessUnit", name: "🏢 Business Unit", inline: true },
-    { key: "users", name: "🔢 Users", inline: true },
-    { key: "productId", name: "📦 Product ID", inline: true },
-    { key: "status", name: "🟢 Status", inline: true },
-    { key: "requestDate", name: "📅 Request Date", inline: true },
-    { key: "expiryDate", name: "📅 Expiry Date", inline: true }
+    { key: "hotelUrl", name: "🔗 **Hotel URL**" },
+    { key: "businessUnit", name: "🏢 **Business Unit**" },
+    { key: "users", name: "🔢 **Users**" },
+    { key: "productId", name: "📦 **Product ID**" },
+    { key: "status", name: "🟢 **Status**" },
+    { key: "requestDate", name: "📅 **Request Date**" },
+    { key: "expiryDate", name: "📅 **Expiry Date**" }
   ];
 
   // Keep track of mapped keys to avoid duplicating them in the dynamic section
@@ -100,7 +91,7 @@ function buildZohoDiscordPayload(data) {
 
   // Add primary fields first
   for (const item of primaryKeys) {
-    addFieldIfPresent(item.name, data[item.key] || data[item.key === "productId" ? "product" : ""], item.inline);
+    addLineIfPresent(item.name, data[item.key] || data[item.key === "productId" ? "product" : ""], false);
     mappedKeys.push(item.key);
     if (item.key === "productId") {
       mappedKeys.push("product");
@@ -112,6 +103,7 @@ function buildZohoDiscordPayload(data) {
   mappedKeys.push("adminToken");
 
   // 2. Dynamic remaining fields (e.g. Use GL, Use AP, Use PMS, etc.)
+  const flagLines = [];
   for (const [key, val] of Object.entries(data)) {
     if (!mappedKeys.includes(key)) {
       // Format camelCase or snake_case key to Title Case
@@ -124,23 +116,47 @@ function buildZohoDiscordPayload(data) {
           .trim();
       }
       
-      const shouldMask = /token|secret|auth|password/i.test(key);
-      addFieldIfPresent(friendlyName, val, true, shouldMask); // make them inline for a clean grid layout
+      const formatted = formatValue(val);
+      if (formatted && formatted !== "-" && !String(val).startsWith("${")) {
+        // Format boolean flags beautifully (e.g. "✅ Use GL" instead of "Use GL: ✅")
+        if (formatted === "✅" || formatted === "❌") {
+          flagLines.push(`${formatted} **${friendlyName}**`);
+        } else {
+          flagLines.push(`🔸 **${friendlyName}:** ${formatted}`);
+        }
+      }
     }
   }
 
+  if (flagLines.length > 0) {
+    lines.push("");
+    lines.push("⚙️ **Configuration / Flags:**");
+    lines.push(...flagLines);
+  }
+
   // 3. Sensitive fields at the bottom
-  addFieldIfPresent("🔐 Authorization", data.authorization, false, true);
-  addFieldIfPresent("🔐 Admin Token", data.adminToken, false, true);
+  const sensitiveLines = [];
+  const authVal = formatValue(data.authorization, true);
+  const tokenVal = formatValue(data.adminToken, true);
+
+  if (authVal && authVal !== "-") sensitiveLines.push(`🔐 **Authorization:** \`${authVal}\``);
+  if (tokenVal && tokenVal !== "-") sensitiveLines.push(`🔐 **Admin Token:** \`${tokenVal}\``);
+
+  if (sensitiveLines.length > 0) {
+    lines.push("");
+    lines.push(...sensitiveLines);
+  }
+
+  const finalDescription = lines.join("\n");
 
   return {
-    username: "Zoho Webhook License",
+    username: "Zoho Webhook Bot",
     embeds: [
       {
         title,
-        description,
+        url: data.zohoRecordUrl || undefined,
+        description: finalDescription,
         color: 5763719,
-        fields,
         footer: {
           text: "Zoho CRM • Workflow Middleware"
         },
