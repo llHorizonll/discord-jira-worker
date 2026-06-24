@@ -8,7 +8,8 @@
     "log": "wrangler tail"
   },
   "dependencies": {
-    "discord-interactions": "^3.4.0"
+    "discord-interactions": "^3.4.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "discord.js": "^14.25.1",

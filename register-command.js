@@ -203,6 +203,22 @@ const commands = [
     description: "🎟️ ดึงข้อมูล Ticket จาก Zoho Desk",
   },
   {
+    name: "getlicenselist",
+    description: "📂 ดึงรายการ License ที่ต้องต่ออายุในเดือนปัจจุบัน",
+    options: [
+      {
+        name: "product",
+        description: "เลือก Product ที่ต้องการดึงข้อมูล",
+        type: 3,
+        required: true,
+        choices: [
+          { name: "Carmen 4 Cloud", value: "Carmen 4Cloud" },
+          { name: "BlueLedgers Cloud", value: "BlueLedgers Cloud" }
+        ]
+      }
+    ]
+  },
+  {
     name: "updatezoho",
     description: "🔄 อัปเดตข้อมูล Developer และ วันคาดว่าจะเสร็จ ใน Zoho Desk",
     options: [
