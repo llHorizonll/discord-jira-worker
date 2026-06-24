@@ -1,4 +1,5 @@
 import { verifyKey } from "discord-interactions";
+import * as XLSX from "xlsx";
 
 const SLA_SQL = `
   (priority IN ('Highest', 'Critical') AND (julianday(resolved_at) - julianday(created_at)) * 24 <= 24) OR
@@ -51,6 +52,70 @@ function maskSecret(value) {
   if (text === "-") return "-";
   if (text.length <= 8) return "••••••••";
   return `${text.slice(0, 4)}••••••••${text.slice(-4)}`;
+}
+
+function getCurrentMonthDateRange() {
+  const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const localDate = new Date(utc + (3600000 * 7)); // Bangkok GMT+7
+  
+  const year = localDate.getFullYear();
+  const month = localDate.getMonth();
+  
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 0);
+  
+  const formatDate = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+  
+  return {
+    start: formatDate(start),
+    end: formatDate(end),
+  };
+}
+
+function convertToExcel(data, getProductName) {
+  const rows = data.map(item => {
+    const prodName = getProductName(item);
+    return {
+      "Product Name": prodName || "",
+      "Hotel URL": item.Hotel_URL || "",
+      "License Name": item.Name || "",
+      "Product Key": item.ProductKey || "",
+      "Request Date": item.RequestDate || "",
+      "Expiry Date": item.ExpiryDate || "",
+      "License Status": item.LicenseStatus || "",
+      "User Count": typeof item.UserCount === "number" ? item.UserCount : parseInt(item.UserCount, 10) || 0,
+      "isGL": item.isGL === true || item.isGL === "true" ? "Yes" : "No",
+      "isAP": item.isAP === true || item.isAP === "true" ? "Yes" : "No",
+      "isAR": item.isAR === true || item.isAR === "true" ? "Yes" : "No",
+      "isAsset": item.isAsset === true || item.isAsset === "true" ? "Yes" : "No",
+      "PMS Brand": item.PMS_Brand || "",
+      "intf POS": item.intf_POS === true || item.intf_POS === "true" ? "Yes" : "No",
+      "intf Inventory": item.intf_Inventory === true || item.intf_Inventory === "true" ? "Yes" : "No"
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+
+  if (rows.length > 0) {
+    const colWidths = Object.keys(rows[0]).map(key => {
+      const maxLength = Math.max(
+        key.length,
+        ...rows.map(row => String(row[key] ?? "").length)
+      );
+      return { wch: maxLength + 2 };
+    });
+    ws['!cols'] = colWidths;
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, "Active Licenses");
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
 function buildZohoDiscordPayload(data) {
@@ -1045,6 +1110,38 @@ async function updateInteractionResponse(env, interactionToken, messagePayload) 
   }
 }
 
+async function updateInteractionResponseWithFile(env, interactionToken, content, fileContent, fileName) {
+  if (!env.APP_ID) {
+    console.error("APP_ID is not configured. Cannot update interaction response.");
+    return;
+  }
+  const url = `https://discord.com/api/v10/webhooks/${env.APP_ID}/${interactionToken}/messages/@original`;
+  
+  const formData = new FormData();
+  formData.append(
+    "payload_json",
+    JSON.stringify({
+      content: content,
+    })
+  );
+  
+  const mimeType = fileName.endsWith(".xlsx")
+    ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    : "text/csv";
+  const fileBlob = new Blob([fileContent], { type: mimeType });
+  formData.append("files[0]", fileBlob, fileName);
+  
+  const response = await fetch(url, {
+    method: "PATCH",
+    body: formData,
+  });
+  
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error(`Failed to update interaction response with file: ${response.status} - ${errText}`);
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -1522,6 +1619,135 @@ export default {
           content: `✅ Jira account linked\nDiscord: <@${discordId}>\nJira: ${email}`,
         },
       });
+    }
+
+    if (cmd === "getlicenselist") {
+      try {
+        const opts = interaction.data.options || [];
+        const productParam = opts.find((o) => o.name === "product")?.value;
+
+        if (!productParam) {
+          return Response.json(embed("❌ Error", "Please specify a product."));
+        }
+
+        ctx.waitUntil((async () => {
+          try {
+            const dateRange = getCurrentMonthDateRange();
+            const accessToken = await getZohoAccessToken(env);
+
+            let allRecords = [];
+            let offset = 0;
+            let hasMore = true;
+            const limit = 200;
+
+            while (hasMore) {
+              const query = `select ProductName,Hotel_URL,Name,ProductKey,RequestDate,ExpiryDate,LicenseStatus,UserCount,isGL,isAP,isAR,isAsset,PMS_Brand,intf_POS,intf_Inventory from Licenses where (RequestDate >= '${dateRange.start}' and RequestDate <= '${dateRange.end}') and (LicenseStatus = 'Active') limit ${limit} offset ${offset}`;
+
+              const response = await fetch("https://www.zohoapis.com/crm/v8/coql", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Zoho-oauthtoken ${accessToken}`,
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ select_query: query })
+              });
+
+              if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Zoho CRM API error: ${response.status} - ${errText}`);
+              }
+
+              const resData = await response.json();
+              const records = resData.data || [];
+              allRecords.push(...records);
+
+              if (resData.info && resData.info.more_records === true && records.length > 0) {
+                offset += records.length;
+              } else {
+                hasMore = false;
+              }
+            }
+
+            // 1. Filter by product parameter
+            let targetProductName = productParam;
+            if (productParam === "Carmen 4Cloud") {
+              targetProductName = "Carmen 4 Cloud";
+            }
+
+            const getProductName = (item) => {
+              if (!item.ProductName) return "";
+              if (typeof item.ProductName === "object") {
+                return item.ProductName.name || "";
+              }
+              return String(item.ProductName);
+            };
+
+            const filteredData = allRecords.filter((item) => {
+              const name = getProductName(item).trim();
+              return name === targetProductName;
+            });
+
+            // 2. Group by Hotel_URL and ProductName.name to sum UserCount
+            const grouped = {};
+            for (const item of filteredData) {
+              const url = (item.Hotel_URL || "").trim().toLowerCase();
+              const prodName = getProductName(item).trim();
+              const key = `${url}:::${prodName}`;
+              
+              const userCount = parseInt(item.UserCount, 10) || 0;
+
+              if (!grouped[key]) {
+                grouped[key] = {
+                  ...item,
+                  UserCount: userCount
+                };
+              } else {
+                grouped[key].UserCount += userCount;
+              }
+            }
+            const finalRecords = Object.values(grouped);
+
+            const clientCount = finalRecords.length;
+            const transactionCount = filteredData.length;
+
+            if (clientCount === 0) {
+              const emptyMessage = [
+                `📊 **License Renewal Report - ${productParam}**`,
+                `📅 Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
+                `──────────────────────────────`,
+                `📭 ไม่พบรายการที่ต้องต่ออายุสำหรับโปรดักส์นี้ในเดือนปัจจุบันครับ`
+              ].join("\n");
+              
+              await updateInteractionResponse(env, interaction.token, { content: emptyMessage });
+              return;
+            }
+
+            // 3. Convert to Excel
+            const excelBuffer = convertToExcel(finalRecords, getProductName);
+
+            const summaryMessage = [
+              `📊 **License Renewal Report - ${productParam}**`,
+              `📅 Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
+              `──────────────────────────────`,
+              `🔹 **จำนวนลูกค้าที่ต้องต่ออายุ (Clients):** \`${clientCount}\` ราย`,
+              `🔹 **จำนวนรายการทั้งหมด (Transactions):** \`${transactionCount}\` รายการ`,
+              `──────────────────────────────`,
+              `📂 ส่งรายงานไฟล์ Excel ของลูกค้าที่ต้องต่ออายุแนบมาด้วยด้านล่างนี้ครับ`
+            ].join("\n");
+
+            const fileName = `license_renewal_${productParam.replace(/\s+/g, "_")}_${dateRange.start}.xlsx`;
+
+            await updateInteractionResponseWithFile(env, interaction.token, summaryMessage, excelBuffer, fileName);
+          } catch (err) {
+            const errorPayload = embed("❌ Error", err.message).data;
+            await updateInteractionResponse(env, interaction.token, errorPayload);
+          }
+        })());
+
+        return Response.json({ type: 5 }); // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+      } catch (err) {
+        return Response.json(embed("❌ Error", err.message));
+      }
     }
 
     if (cmd === "zohodesk") {
