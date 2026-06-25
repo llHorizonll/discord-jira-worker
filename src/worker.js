@@ -1,5 +1,5 @@
 import { verifyKey } from "discord-interactions";
-import * as XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
 
 const SLA_SQL = `
   (priority IN ('Highest', 'Critical') AND (julianday(resolved_at) - julianday(created_at)) * 24 <= 24) OR
@@ -78,10 +78,13 @@ function getCurrentMonthDateRange() {
   };
 }
 
-function convertToExcel(data, getProductName) {
+function convertToExcel(data, getProductName, productName) {
+  const isBlueLedger = productName && productName.toLowerCase().includes("blueledger");
+  const isCarmen = productName && productName.toLowerCase().includes("carmen");
+
   const rows = data.map(item => {
     const prodName = getProductName(item);
-    return {
+    const row = {
       "Product Name": prodName || "",
       "Hotel URL": item.Hotel_URL || "",
       "License Name": item.Name || "",
@@ -89,15 +92,20 @@ function convertToExcel(data, getProductName) {
       "Request Date": item.RequestDate || "",
       "Expiry Date": item.ExpiryDate || "",
       "License Status": item.LicenseStatus || "",
-      "User Count": typeof item.UserCount === "number" ? item.UserCount : parseInt(item.UserCount, 10) || 0,
-      "isGL": item.isGL === true || item.isGL === "true" ? "Yes" : "No",
-      "isAP": item.isAP === true || item.isAP === "true" ? "Yes" : "No",
-      "isAR": item.isAR === true || item.isAR === "true" ? "Yes" : "No",
-      "isAsset": item.isAsset === true || item.isAsset === "true" ? "Yes" : "No",
-      "PMS Brand": item.PMS_Brand || "",
-      "intf POS": item.intf_POS === true || item.intf_POS === "true" ? "Yes" : "No",
-      "intf Inventory": item.intf_Inventory === true || item.intf_Inventory === "true" ? "Yes" : "No"
+      "User Count": typeof item.UserCount === "number" ? item.UserCount : parseInt(item.UserCount, 10) || 0
     };
+
+    if (!isBlueLedger) {
+      row["isGL"] = item.isGL === true || item.isGL === "true" ? "Yes" : "No";
+      row["isAP"] = item.isAP === true || item.isAP === "true" ? "Yes" : "No";
+      row["isAR"] = item.isAR === true || item.isAR === "true" ? "Yes" : "No";
+      row["isAsset"] = item.isAsset === true || item.isAsset === "true" ? "Yes" : "No";
+      row["PMS Brand"] = item.PMS_Brand || "";
+      row["intf POS"] = item.intf_POS === true || item.intf_POS === "true" ? "Yes" : "No";
+      row["intf Inventory"] = item.intf_Inventory === true || item.intf_Inventory === "true" ? "Yes" : "No";
+    }
+
+    return row;
   });
 
   const wb = XLSX.utils.book_new();
@@ -112,6 +120,37 @@ function convertToExcel(data, getProductName) {
       return { wch: maxLength + 2 };
     });
     ws['!cols'] = colWidths;
+
+    // Apply header color styling
+    let headerColor = "";
+    if (isBlueLedger) {
+      headerColor = "2E7D32"; // Green for BlueLedgers
+    } else if (isCarmen) {
+      headerColor = "1F4E79"; // Blue/Dark Blue for Carmen
+    }
+
+    if (headerColor && ws['!ref']) {
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+        if (ws[cellAddress]) {
+          ws[cellAddress].s = {
+            fill: {
+              patternType: "solid",
+              fgColor: { rgb: headerColor }
+            },
+            font: {
+              bold: true,
+              color: { rgb: "FFFFFF" }
+            },
+            alignment: {
+              horizontal: "center",
+              vertical: "center"
+            }
+          };
+        }
+      }
+    }
   }
 
   XLSX.utils.book_append_sheet(wb, ws, "Active Licenses");
@@ -1712,8 +1751,8 @@ export default {
 
             if (clientCount === 0) {
               const emptyMessage = [
-                `📊 **License Renewal Report - ${productParam}**`,
-                `📅 Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
+                `📊  **${productParam}**`,
+                `📅  Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
                 `──────────────────────────────`,
                 `📭 ไม่พบรายการที่ต้องต่ออายุสำหรับโปรดักส์นี้ในเดือนปัจจุบันครับ`
               ].join("\n");
@@ -1723,11 +1762,11 @@ export default {
             }
 
             // 3. Convert to Excel
-            const excelBuffer = convertToExcel(finalRecords, getProductName);
+            const excelBuffer = convertToExcel(finalRecords, getProductName, productParam);
 
             const summaryMessage = [
-              `📊 **License Renewal Report - ${productParam}**`,
-              `📅 Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
+              `📊  **${productParam}**`,
+              `📅  Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
               `──────────────────────────────`,
               `🔹 **จำนวนลูกค้าที่ต้องต่ออายุ (Clients):** \`${clientCount}\` ราย`,
               `🔹 **จำนวนรายการทั้งหมด (Transactions):** \`${transactionCount}\` รายการ`,

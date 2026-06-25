@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "discord-interactions": "^3.4.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0"
   },
   "devDependencies": {
     "discord.js": "^14.25.1",
