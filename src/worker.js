@@ -1742,12 +1742,17 @@ export default {
               return name === targetProductName;
             });
 
-            // 2. Group by Hotel_URL and ProductName.name to sum UserCount
+            // 2. Group by Hotel_URL, ProductName, Name, and ProductKey to sum UserCount.
+            // This prevents different licenses for the same hotel/product (e.g. STW ASSET CO.,LTD.) from being merged and lost.
+            // If Hotel_URL is empty or null, we keep them separate using a unique counter.
             const grouped = {};
+            let emptyCounter = 0;
             for (const item of filteredData) {
               const url = (item.Hotel_URL || "").trim().toLowerCase();
               const prodName = getProductName(item).trim();
-              const key = `${url}:::${prodName}`;
+              const name = (item.Name || "").trim().toLowerCase();
+              const prodKey = (item.ProductKey || "").trim().toLowerCase();
+              const key = url ? `${url}:::${prodName}:::${name}:::${prodKey}` : `EMPTY_${emptyCounter++}:::${prodName}`;
               
               const userCount = parseInt(item.UserCount, 10) || 0;
 
