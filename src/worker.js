@@ -82,7 +82,23 @@ function convertToExcel(data, getProductName, productName) {
   const isBlueLedger = productName && productName.toLowerCase().includes("blueledger");
   const isCarmen = productName && productName.toLowerCase().includes("carmen");
 
-  const rows = data.map(item => {
+  const statusPriority = {
+    "Active": 1,
+    "Temporary": 2
+  };
+
+  const sortedData = [...data].sort((a, b) => {
+    const priorityA = statusPriority[a.LicenseStatus] || 99;
+    const priorityB = statusPriority[b.LicenseStatus] || 99;
+    if (priorityA !== priorityB) {
+      return priorityA - priorityB;
+    }
+    const nameA = String(a.Name || "").toLowerCase();
+    const nameB = String(b.Name || "").toLowerCase();
+    return nameA.localeCompare(nameB);
+  });
+
+  const rows = sortedData.map(item => {
     const prodName = getProductName(item);
     const row = {
       "Product Name": prodName || "",
@@ -1680,7 +1696,7 @@ export default {
             const limit = 200;
 
             while (hasMore) {
-              const query = `select ProductName,Hotel_URL,Name,ProductKey,RequestDate,ExpiryDate,LicenseStatus,UserCount,isGL,isAP,isAR,isAsset,PMS_Brand,intf_POS,intf_Inventory from Licenses where (RequestDate >= '${dateRange.start}' and RequestDate <= '${dateRange.end}') and (LicenseStatus = 'Active') limit ${limit} offset ${offset}`;
+              const query = `select ProductName,Hotel_URL,Name,ProductKey,RequestDate,ExpiryDate,LicenseStatus,UserCount,isGL,isAP,isAR,isAsset,PMS_Brand,intf_POS,intf_Inventory from Licenses where (RequestDate >= '${dateRange.start}' and RequestDate <= '${dateRange.end}') and (LicenseStatus = 'Active' or LicenseStatus = 'Temporary') limit ${limit} offset ${offset}`;
 
               const response = await fetch("https://www.zohoapis.com/crm/v8/coql", {
                 method: "POST",
