@@ -201,6 +201,28 @@ const commands = [
   {
     name: "zohodesk",
     description: "🎟️ ดึงข้อมูล Ticket จาก Zoho Desk",
+    options: [
+      {
+        name: "developer",
+        description: "👤 เลือกชื่อนักพัฒนา (cf_developer) เพื่อกรองข้อมูล",
+        type: 3,
+        required: false,
+        choices: developerChoices,
+      },
+      {
+        name: "product_category",
+        description: "📦 เลือก Product Category (cf_product_category) เพื่อกรองข้อมูล",
+        type: 3,
+        required: false,
+        choices: [
+          { name: "CarmenV4", value: "CarmenV4" }
+        ],
+      },
+    ],
+  },
+  {
+    name: "reportzoho",
+    description: "📊 รายงานสรุปงาน Zoho Desk ของ Developer ในเดือนปัจจุบัน",
   },
   {
     name: "getlicenselist",
