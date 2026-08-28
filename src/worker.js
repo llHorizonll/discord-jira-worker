@@ -1773,9 +1773,19 @@ export default {
               return String(item.ProductName);
             };
 
+            // Log unique Carmen product names fetched from Zoho
+            const carmenProducts = [...new Set(allRecords
+              .map(item => getProductName(item).trim())
+              .filter(name => name.toLowerCase().includes("carmen"))
+            )];
+            console.log("ℹ️ All unique Carmen product names fetched from Zoho:", carmenProducts);
+
             const filteredData = allRecords.filter((item) => {
-              const name = getProductName(item).trim();
-              return name === targetProductName;
+              const name = getProductName(item).trim().toLowerCase();
+              if (targetProductName === "Carmen 4 Cloud") {
+                return name === "carmen 4 cloud" || name === "carmen 4 premise" || name === "carmen 4premise";
+              }
+              return name === targetProductName.toLowerCase();
             });
 
             // 2. Group by Hotel_URL, ProductName, Name, and ProductKey to sum UserCount.
