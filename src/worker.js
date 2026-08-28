@@ -78,6 +78,42 @@ function getCurrentMonthDateRange() {
   };
 }
 
+function isWithinCurrentMonth(dateStr) {
+  if (!dateStr) return false;
+  const ticketDate = new Date(dateStr);
+  const ticketUtc = ticketDate.getTime();
+  if (isNaN(ticketUtc)) return false;
+  
+  const ticketBkk = new Date(ticketUtc + (7 * 3600 * 1000));
+  
+  const now = new Date();
+  const bangkokNow = new Date(now.getTime() + (7 * 3600 * 1000));
+  
+  return ticketBkk.getUTCFullYear() === bangkokNow.getUTCFullYear() &&
+         ticketBkk.getUTCMonth() === bangkokNow.getUTCMonth();
+}
+
+function isBeforeCurrentMonth(dateStr) {
+  if (!dateStr) return false;
+  const ticketDate = new Date(dateStr);
+  const ticketUtc = ticketDate.getTime();
+  if (isNaN(ticketUtc)) return false;
+  
+  const ticketBkk = new Date(ticketUtc + (7 * 3600 * 1000));
+  
+  const now = new Date();
+  const bangkokNow = new Date(now.getTime() + (7 * 3600 * 1000));
+  
+  const tYear = ticketBkk.getUTCFullYear();
+  const tMonth = ticketBkk.getUTCMonth();
+  const cYear = bangkokNow.getUTCFullYear();
+  const cMonth = bangkokNow.getUTCMonth();
+  
+  if (tYear < cYear) return true;
+  if (tYear === cYear && tMonth < cMonth) return true;
+  return false;
+}
+
 function convertToExcel(data, getProductName, productName) {
   const isBlueLedger = productName && productName.toLowerCase().includes("blueledger");
   const isCarmen = productName && productName.toLowerCase().includes("carmen");
@@ -1812,13 +1848,17 @@ export default {
 
     if (cmd === "zohodesk") {
       try {
+        const opts = interaction.data.options || [];
+        const developerParam = opts.find((o) => o.name === "developer")?.value?.trim();
+        const productCategoryParam = opts.find((o) => o.name === "product_category")?.value?.trim();
+
         ctx.waitUntil((async () => {
           try {
             const accessToken = await getZohoAccessToken(env);
 
-            // Fetch tickets from Zoho Desk
+            // Fetch tickets from Zoho Desk (increased limit to 100, removed viewId)
             const response = await fetch(
-              "https://desk.zoho.com/api/v1/tickets?limit=10&status=With Developers&fields=ticketNumber,subject,status,cf_product_category,cf_developer,cf_expect_finish_by_dev,createdTime&viewId=483929000060650018",
+              "https://desk.zoho.com/api/v1/tickets?limit=100&status=With Developers&fields=ticketNumber,subject,status,cf_product_category,cf_developer,cf_expect_finish_by_dev,createdTime",
               {
                 headers: {
                   "Authorization": `Zoho-oauthtoken ${accessToken}`,
@@ -1837,14 +1877,37 @@ export default {
             const resData = await response.json();
             const tickets = resData.data || [];
 
-            if (tickets.length === 0) {
-              const emptyPayload = embed("🎟️ Zoho Desk Tickets", "No tickets found with status 'With Developers'.").data;
+            // Apply filters in memory
+            let filteredTickets = tickets;
+            if (developerParam) {
+              filteredTickets = filteredTickets.filter(t => 
+                t.cf && t.cf.cf_developer && t.cf.cf_developer.toLowerCase() === developerParam.toLowerCase()
+              );
+            }
+            if (productCategoryParam) {
+              filteredTickets = filteredTickets.filter(t => 
+                t.cf && t.cf.cf_product_category && t.cf.cf_product_category.toLowerCase() === productCategoryParam.toLowerCase()
+              );
+            }
+
+            if (filteredTickets.length === 0) {
+              let filterDesc = "No tickets found with status 'With Developers'.";
+              if (developerParam || productCategoryParam) {
+                const filters = [];
+                if (developerParam) filters.push(`Dev: \`${developerParam}\``);
+                if (productCategoryParam) filters.push(`Product: \`${productCategoryParam}\``);
+                filterDesc = `No tickets found matching: ${filters.join(" | ")}.`;
+              }
+              const emptyPayload = embed("🎟️ Zoho Desk Tickets", filterDesc).data;
               await updateInteractionResponse(env, interaction.token, emptyPayload);
               return;
             }
 
+            // Slice to top 10 for the display
+            const displayTickets = filteredTickets.slice(0, 10);
+
             // Format tickets for Discord message
-            const ticketList = tickets.map((t) => {
+            const ticketList = displayTickets.map((t) => {
               const id = t.id;
               const ticketNo = t.ticketNumber || "N/A";
               const subject = t.subject || "No Subject";
@@ -1898,7 +1961,135 @@ export default {
               ].join("\n");
             }).join("\n");
 
-            const successPayload = embed("🎟️ Zoho Desk Tickets (With Developers)", ticketList).data;
+            let title = "🎟️ Zoho Desk Tickets (With Developers)";
+            const filtersUsed = [];
+            if (developerParam) filtersUsed.push(`Dev: ${developerParam}`);
+            if (productCategoryParam) filtersUsed.push(`Product: ${productCategoryParam}`);
+            if (filtersUsed.length > 0) {
+              title += ` - Filtered by [${filtersUsed.join(", ")}]`;
+            }
+
+            const successPayload = embed(title, ticketList).data;
+            await updateInteractionResponse(env, interaction.token, successPayload);
+          } catch (err) {
+            const errorPayload = embed("❌ Error", err.message).data;
+            await updateInteractionResponse(env, interaction.token, errorPayload);
+          }
+        })());
+
+        return Response.json({ type: 5 }); // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+      } catch (err) {
+        return Response.json(embed("❌ Error", err.message));
+      }
+    }
+
+    if (cmd === "reportzoho") {
+      try {
+        ctx.waitUntil((async () => {
+          try {
+            const accessToken = await getZohoAccessToken(env);
+
+            let allTickets = [];
+            let fromIndex = 0;
+            const limit = 100;
+            let hasMore = true;
+
+            while (hasMore) {
+              const url = `https://desk.zoho.com/api/v1/tickets?from=${fromIndex}&limit=${limit}&sortBy=-createdTime&fields=ticketNumber,status,cf_developer,createdTime`;
+              const response = await fetch(url, {
+                headers: {
+                  "Authorization": `Zoho-oauthtoken ${accessToken}`,
+                  "orgId": env.ZOHO_ORG_ID
+                }
+              });
+
+              if (!response.ok) {
+                const errText = await response.text();
+                const errorPayload = embed("❌ Zoho API Error", `Failed to fetch tickets: ${response.status} - ${errText}`).data;
+                await updateInteractionResponse(env, interaction.token, errorPayload);
+                return;
+              }
+
+              const resData = await response.json();
+              const tickets = resData.data || [];
+
+              if (tickets.length === 0) {
+                break;
+              }
+
+              for (const ticket of tickets) {
+                if (isBeforeCurrentMonth(ticket.createdTime)) {
+                  hasMore = false;
+                  break;
+                }
+
+                if (isWithinCurrentMonth(ticket.createdTime)) {
+                  allTickets.push(ticket);
+                }
+              }
+
+              if (tickets.length < limit) {
+                break;
+              }
+
+              fromIndex += limit;
+            }
+
+            // Summarize stats by developer
+            const devStats = {};
+            const defaultDevs = ["Ake", "Ohm", "Noon", "PP"];
+            for (const dev of defaultDevs) {
+              devStats[dev] = { total: 0, pending: 0, finish: 0 };
+            }
+
+            for (const ticket of allTickets) {
+              const dev = ticket.cf?.cf_developer || "ยังไม่ได้ระบุ";
+              if (!devStats[dev]) {
+                devStats[dev] = { total: 0, pending: 0, finish: 0 };
+              }
+
+              const status = ticket.status;
+
+              // Total Jobs = Total Task - Task('Move to JIRA')
+              if (status !== "Move to JIRA") {
+                devStats[dev].total++;
+              }
+              // Pending Jobs = Task('With Developers')
+              if (status === "With Developers") {
+                devStats[dev].pending++;
+              }
+              // Finish Jobs = Task('Resolved by Developers')
+              if (status === "Resolved by Developers") {
+                devStats[dev].finish++;
+              }
+            }
+
+            // Sort developer names alphabetically, keeping "ยังไม่ได้ระบุ" at the bottom
+            const sortedDevNames = Object.keys(devStats).sort((a, b) => {
+              if (a === "ยังไม่ได้ระบุ") return 1;
+              if (b === "ยังไม่ได้ระบุ") return -1;
+              return a.localeCompare(b);
+            });
+
+            // Format message
+            let reportMsg = "";
+            for (const devName of sortedDevNames) {
+              const stats = devStats[devName];
+              // Only display developers with active jobs or standard default developers
+              if (stats.total > 0 || stats.pending > 0 || stats.finish > 0 || defaultDevs.includes(devName)) {
+                reportMsg += `👤 **${devName}**\n`;
+                reportMsg += `• 📋 **Total Jobs:** \`${stats.total}\` *(ไม่รวม 'Move to JIRA')*\n`;
+                reportMsg += `• ⏳ **Pending Jobs:** \`${stats.pending}\` *(With Developers)*\n`;
+                reportMsg += `• ✅ **Finish Jobs:** \`${stats.finish}\` *(Resolved by Developers)*\n`;
+                reportMsg += `───────────────────\n`;
+              }
+            }
+
+            if (!reportMsg) {
+              reportMsg = "No developer tickets found for this month.";
+            }
+
+            const successPayload = embed("📊 Zoho Desk Monthly Developer Report", reportMsg).data;
             await updateInteractionResponse(env, interaction.token, successPayload);
           } catch (err) {
             const errorPayload = embed("❌ Error", err.message).data;
@@ -2064,6 +2255,7 @@ export default {
             /linkjira – 🔗 Link your Discord account to Jira email
             /zohodesk – 🎟️ ดึงข้อมูล Ticket จาก Zoho Desk
             /updatezoho – 🔄 อัปเดตข้อมูลตั๋ว Zoho Desk (Dev / Expect Finish)
+            /reportzoho – 📊 รายงานสรุปงาน Zoho Desk ของ Developer ในเดือนปัจจุบัน
           `,
         ),
       );
