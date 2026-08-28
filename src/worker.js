@@ -1780,10 +1780,20 @@ export default {
             )];
             console.log("ℹ️ All unique Carmen product names fetched from Zoho:", carmenProducts);
 
+            // Log unique BlueLedgers product names fetched from Zoho
+            const blueledgersProducts = [...new Set(allRecords
+              .map(item => getProductName(item).trim())
+              .filter(name => name.toLowerCase().includes("blueledger"))
+            )];
+            console.log("ℹ️ All unique BlueLedgers product names fetched from Zoho:", blueledgersProducts);
+
             const filteredData = allRecords.filter((item) => {
               const name = getProductName(item).trim().toLowerCase();
               if (targetProductName === "Carmen 4 Cloud") {
                 return name === "carmen 4 cloud" || name === "carmen 4 premise" || name === "carmen 4premise";
+              }
+              if (targetProductName === "BlueLedgers Cloud") {
+                return name === "blueledgers cloud" || name === "blueledgers premise" || name === "blueledgerspremise" || name === "blueledger premise" || name === "blueledgerpremise";
               }
               return name === targetProductName.toLowerCase();
             });
