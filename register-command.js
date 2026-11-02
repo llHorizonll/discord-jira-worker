@@ -226,7 +226,7 @@ const commands = [
   },
   {
     name: "getlicenselist",
-    description: "📂 ดึงรายการ License ที่ต้องต่ออายุในเดือนปัจจุบัน",
+    description: "📂 ดึงรายการ License ที่ต้องต่ออายุ",
     options: [
       {
         name: "product",
@@ -236,6 +236,16 @@ const commands = [
         choices: [
           { name: "Carmen 4 Cloud", value: "Carmen 4Cloud" },
           { name: "BlueLedgers Cloud", value: "BlueLedgers Cloud" }
+        ]
+      },
+      {
+        name: "period",
+        description: "เลือกช่วงเดือน (ค่าเริ่มต้น: เดือนปัจจุบัน)",
+        type: 3,
+        required: false,
+        choices: [
+          { name: "📅 เดือนปัจจุบัน (Current Month)", value: "current" },
+          { name: "⏪ เดือนที่แล้ว (Previous Month)", value: "previous" }
         ]
       }
     ]
