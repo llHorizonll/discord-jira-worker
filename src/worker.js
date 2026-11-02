@@ -54,13 +54,13 @@ function maskSecret(value) {
   return `${text.slice(0, 4)}••••••••${text.slice(-4)}`;
 }
 
-function getCurrentMonthDateRange() {
+function getMonthDateRange(offsetMonths = 0) {
   const now = new Date();
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
   const localDate = new Date(utc + (3600000 * 7)); // Bangkok GMT+7
   
   const year = localDate.getFullYear();
-  const month = localDate.getMonth();
+  const month = localDate.getMonth() + offsetMonths;
   
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 0);
@@ -134,11 +134,21 @@ function convertToExcel(data, getProductName, productName) {
     return nameA.localeCompare(nameB);
   });
 
+  const getBusinessUnitName = (item) => {
+    const val = item.Business_Unit_Name ?? item.Business_Unit ?? item.BusinessUnitName ?? item.BusinessUnit ?? item.businessUnit ?? "";
+    if (!val) return "";
+    if (typeof val === "object") {
+      return val.name || val.id || "";
+    }
+    return String(val);
+  };
+
   const rows = sortedData.map(item => {
     const prodName = getProductName(item);
     const row = {
       "Product Name": prodName || "",
       "Hotel URL": item.Hotel_URL || "",
+      "Business Unit Name": getBusinessUnitName(item),
       "License Name": item.Name || "",
       "Product Key": item.ProductKey || "",
       "Request Date": item.RequestDate || "",
@@ -404,12 +414,17 @@ async function getZohoAccessToken(env) {
     body: params.toString()
   });
 
+  const resText = await res.text();
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Failed to refresh Zoho token: ${res.status} - ${errText}`);
+    throw new Error(`Failed to refresh Zoho token: ${res.status} - ${resText}`);
   }
 
-  const data = await res.json();
+  let data;
+  try {
+    data = JSON.parse(resText);
+  } catch (e) {
+    throw new Error(`Failed to parse Zoho token response (${res.status}): ${resText.slice(0, 100)}`);
+  }
   if (data.error) {
     throw new Error(`Zoho OAuth Error (refresh_token): ${data.error_description || data.error}`);
   }
@@ -1716,6 +1731,9 @@ export default {
       try {
         const opts = interaction.data.options || [];
         const productParam = opts.find((o) => o.name === "product")?.value;
+        const periodParam = opts.find((o) => o.name === "period")?.value || "current";
+        const offsetMonths = periodParam === "previous" ? -1 : 0;
+        const periodText = periodParam === "previous" ? "เดือนที่แล้ว" : "เดือนปัจจุบัน";
 
         if (!productParam) {
           return Response.json(embed("❌ Error", "Please specify a product."));
@@ -1723,40 +1741,96 @@ export default {
 
         ctx.waitUntil((async () => {
           try {
-            const dateRange = getCurrentMonthDateRange();
+            const dateRange = getMonthDateRange(offsetMonths);
             const accessToken = await getZohoAccessToken(env);
 
+            const baseFields = "ProductName,Hotel_URL,Name,ProductKey,RequestDate,ExpiryDate,LicenseStatus,UserCount,isGL,isAP,isAR,isAsset,PMS_Brand,intf_POS,intf_Inventory";
+            const buCandidates = ["Business_Unit_Name", "Business_Unit", "BusinessUnitName", "BusinessUnit"];
+
+            const fetchRecordsWithBuField = async (buField) => {
+              const fieldsToSelect = buField ? `${buField},${baseFields}` : baseFields;
+              let records = [];
+              let offset = 0;
+              let hasMore = true;
+              const limit = 200;
+
+              while (hasMore) {
+                const query = `select ${fieldsToSelect} from Licenses where (RequestDate >= '${dateRange.start}' and RequestDate <= '${dateRange.end}') and (LicenseStatus = 'Active' or LicenseStatus = 'Temporary') limit ${limit} offset ${offset}`;
+
+                const response = await fetch("https://www.zohoapis.com/crm/v8/coql", {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Zoho-oauthtoken ${accessToken}`,
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify({ select_query: query })
+                });
+
+                // Handle 204 No Content (standard Zoho COQL response when no records match)
+                if (response.status === 204) {
+                  hasMore = false;
+                  break;
+                }
+
+                const resText = await response.text();
+
+                if (!response.ok) {
+                  const error = new Error(`Zoho CRM API error: ${response.status} - ${resText}`);
+                  error.status = response.status;
+                  error.body = resText;
+                  throw error;
+                }
+
+                if (!resText || !resText.trim()) {
+                  hasMore = false;
+                  break;
+                }
+
+                let resData;
+                try {
+                  resData = JSON.parse(resText);
+                } catch (parseErr) {
+                  throw new Error(`Failed to parse Zoho CRM response (${response.status}): ${resText.slice(0, 100)}`);
+                }
+                const currentBatch = resData.data || [];
+                records.push(...currentBatch);
+
+                if (resData.info && resData.info.more_records === true && currentBatch.length > 0) {
+                  offset += currentBatch.length;
+                } else {
+                  hasMore = false;
+                }
+              }
+              return records;
+            };
+
             let allRecords = [];
-            let offset = 0;
-            let hasMore = true;
-            const limit = 200;
+            let chosenBuField = null;
 
-            while (hasMore) {
-              const query = `select ProductName,Hotel_URL,Name,ProductKey,RequestDate,ExpiryDate,LicenseStatus,UserCount,isGL,isAP,isAR,isAsset,PMS_Brand,intf_POS,intf_Inventory from Licenses where (RequestDate >= '${dateRange.start}' and RequestDate <= '${dateRange.end}') and (LicenseStatus = 'Active' or LicenseStatus = 'Temporary') limit ${limit} offset ${offset}`;
-
-              const response = await fetch("https://www.zohoapis.com/crm/v8/coql", {
-                method: "POST",
-                headers: {
-                  "Authorization": `Zoho-oauthtoken ${accessToken}`,
-                  "Content-Type": "application/json"
-                },
-                body: JSON.stringify({ select_query: query })
-              });
-
-              if (!response.ok) {
-                const errText = await response.text();
-                throw new Error(`Zoho CRM API error: ${response.status} - ${errText}`);
+            for (const buCandidate of buCandidates) {
+              try {
+                allRecords = await fetchRecordsWithBuField(buCandidate);
+                chosenBuField = buCandidate;
+                console.log(`ℹ️ Successfully fetched Licenses from Zoho CRM with field '${buCandidate}'`);
+                break;
+              } catch (err) {
+                const isColumnError = err.body && (
+                  err.body.includes("INVALID_QUERY") ||
+                  err.body.includes("column") ||
+                  err.body.includes(buCandidate) ||
+                  err.status === 400
+                );
+                if (isColumnError) {
+                  console.warn(`⚠️ Field '${buCandidate}' is not present in Licenses module, trying next candidate...`);
+                  continue;
+                }
+                throw err;
               }
+            }
 
-              const resData = await response.json();
-              const records = resData.data || [];
-              allRecords.push(...records);
-
-              if (resData.info && resData.info.more_records === true && records.length > 0) {
-                offset += records.length;
-              } else {
-                hasMore = false;
-              }
+            if (!chosenBuField) {
+              console.warn("⚠️ None of the Business Unit candidate fields succeeded. Fetching without Business Unit field as fallback.");
+              allRecords = await fetchRecordsWithBuField(null);
             }
 
             // 1. Filter by product parameter
@@ -1829,9 +1903,9 @@ export default {
             if (clientCount === 0) {
               const emptyMessage = [
                 `📊  **${productParam}**`,
-                `📅  Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
+                `📅  Period: \`${dateRange.start}\` to \`${dateRange.end}\` (${periodText})`,
                 `──────────────────────────────`,
-                `📭 ไม่พบรายการที่ต้องต่ออายุสำหรับโปรดักส์นี้ในเดือนปัจจุบันครับ`
+                `📭 ไม่พบรายการที่ต้องต่ออายุสำหรับโปรดักส์นี้ใน${periodText}ครับ`
               ].join("\n");
               
               await updateInteractionResponse(env, interaction.token, { content: emptyMessage });
@@ -1843,7 +1917,7 @@ export default {
 
             const summaryMessage = [
               `📊  **${productParam}**`,
-              `📅  Period: \`${dateRange.start}\` to \`${dateRange.end}\``,
+              `📅  Period: \`${dateRange.start}\` to \`${dateRange.end}\` (${periodText})`,
               `──────────────────────────────`,
               `🔹 **จำนวนลูกค้าที่ต้องต่ออายุ (Clients):** \`${clientCount}\` ราย`,
               `🔹 **จำนวนรายการทั้งหมด (Transactions):** \`${transactionCount}\` รายการ`,
