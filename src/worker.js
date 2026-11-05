@@ -1295,7 +1295,7 @@ export default {
       }
 
       const discordPayload = buildZohoDiscordPayload(data);
-      const webhookUrl = env.DISCORD_WEBHOOK_LICENSE || "https://discord.com/api/webhooks/1518908529807986730/1KsQLW13Yxe483JvNfwE70jrt8A0caUcrKK6ruGRwkDU9jw6gxliW4N-yqb_7a9-nKFC";
+      const webhookUrl = env.DISCORD_WEBHOOK_LICENSE;
 
       const discordResponse = await fetch(webhookUrl, {
         method: "POST",
