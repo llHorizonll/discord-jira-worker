@@ -123,7 +123,18 @@ function convertToExcel(data, getProductName, productName) {
     "Temporary": 2
   };
 
+  const expiryTimestamp = (date) => {
+    const timestamp = Date.parse(date);
+    return Number.isNaN(timestamp) ? Infinity : timestamp;
+  };
+
   const sortedData = [...data].sort((a, b) => {
+    const expiryA = expiryTimestamp(a.ExpiryDate);
+    const expiryB = expiryTimestamp(b.ExpiryDate);
+    if (expiryA !== expiryB) {
+      return expiryA - expiryB;
+    }
+
     const priorityA = statusPriority[a.LicenseStatus] || 99;
     const priorityB = statusPriority[b.LicenseStatus] || 99;
     if (priorityA !== priorityB) {
